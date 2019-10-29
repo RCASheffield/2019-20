@@ -355,7 +355,7 @@ void set_pwm(int requested)
 				integral_error = new_integral_error;
 			}
 		}
-		else (drive == 'S' || drive == 'N';)    // if drive is stopped or neutral, make output 0
+		else if (drive == 'S' || drive == 'N')    // if drive is stopped or neutral, make output 0
 		{
 			integral_error = 0;   // resets integral error to prevent it being non-zero when switched back into forwards or reverse
 			pwm = 0;
