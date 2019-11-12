@@ -1,7 +1,7 @@
 
 #include <LiquidCrystal.h>
 
-// Output Pin Definitions
+// Output pin definitions
 #define safety_pin 10
 #define brakes_pin 9
 #define H1A 6
@@ -11,44 +11,49 @@
 #define pwm_pin 3
 #define horn_pin  4
 
-// Input Pin Definitions
+// Input pin definitions
 #define autostop_pin_interrupt  19    // This is also connected via a jumper to input 13
 #define encoder_1a_interrupt  18    // This is also connected via a jumper to input 25
 #define encoder_1b  26
 #define encoder_1i  27  // Index
 
-// LCD Display Setup
+// LCD display setup
 LiquidCrystal lcd(50, 51, 49, 48, 47, 46);
 
-// Recieved Variables
+// Variables receiver from control box
 byte desired_speed = 0;
 char drive = 'S';
 char horn = 'h';
 char autostop = 'a';
 
-// Interrupt Variables
-volatile boolean autostop_flag = 0;
-volatile unsigned long auto_start_pulse_count = 0;
-volatile unsigned long pulse_count = 0;
-
-// Sent Variables
+// Variables sent to control box
 int actual_speed = 0;
 byte pwm = 0;
 
+// Autostop variables
+volatile boolean autostop_flag = 0;
+volatile unsigned long auto_start_pulse_count = 0;
 boolean autostop_end = 0;
 
+// Encoder interruot variables
+volatile unsigned long pulse_count = 0;
+
+// Runs once on power on
 void setup()
 {
-  pin_definitions();    // sets pin modes
+  pin_definitions();  // Set pin modes
   digitalWrite(safety_pin, HIGH); // Safety relay on to sustain power to all electronics
-  Serial.begin(115200);   // Baud rate must match controller arduino
-  lcd.begin(16, 2);
-  lcd.clear();
-  attachInterrupt(digitalPinToInterrupt(encoder_1a_interrupt), read_encoder1, RISING);    // Creates inerrupt to read the rotary encoder
+  Serial.begin(115200); // Baud rate must match control box
+  lcd.begin(16, 2); // Initialise LCD (16 characters and 2 rows)
+  lcd.clear();  // CLear LCD
+  attachInterrupt(digitalPinToInterrupt(encoder_1a_interrupt), read_encoder1, RISING);  // Attatch interrupt to read the rotary encoder
 }
 
+// Runs continuously while powered on
 void loop()
 {
+  // Set control scheme: c = closed loop, C= open loop
+  // This is for testing only, cannot change without reuploading
   static const char control_scheme = 'c';
 
   // Variables for calculating speed
@@ -57,81 +62,100 @@ void loop()
 
   // Loop timing variables
   static unsigned long loop_start_time = 0;
-  static const unsigned long loop_period = 10;   // sets loop period
+  static const unsigned long loop_period = 10;  // sets loop period
 
   loop_start_time = millis();
 
   loop_start_pulse_count = pulse_count;
-  actual_speed =  1.104466 * loop_pulse_count; // constant = 0.8835729*(R/(G*T)) where R is the wheel radius (0.15m, don't be an idiot and use the diameter, like I did), G is the gear ratio between the encoder and the wheel, and T is the loop period. Outputs speed such that 150 = 15km/h.
 
-  receive_comms();    // checks for incoming comms, includes timeout if nothing received
+  // constant = 0.8835729*(R/(G*T)) where R is the wheel radius (0.15m, don't be an idiot and use the diameter, like I did), 
+  // G is the gear ratio between the encoder and the wheel, and T is the loop period. Outputs speed such that 150 = 15km/h.
+  actual_speed =  1.104466 * loop_pulse_count;
 
-  change_outputs();   // changes relay states if necessary and resets variables. Includes relay dead time
+  receive_comms();    // Check for incoming comms, includes timeout if nothing received
+  change_outputs();   // Change relay states if necessary and resets variables. Includes relay dead time
 
+  // Closed loop control
   if (control_scheme == 'c')
   {
-    if (autostop_flag == 1 && autostop == 'A')   // controls speed for autostop triggered mode
+    if (autostop_flag == 1 && autostop == 'A')   // Control speed for autostop triggered mode
     {
-      set_pwm(auto_reference());    // auto reference returns the speed setpoint based on distance travelled in autostop mode
+      set_pwm(auto_reference());    // Auto reference returns the speed setpoint based on distance travelled in autostop mode
     }
     else
     {
-      set_pwm(desired_speed);   // sets pwm based on control box setpoint
+      set_pwm(desired_speed);   // Sets pwm based on control box setpoint
     }
   }
-  else
+  // Open loop control
+  else if (control_scheme == 'C')
   {
-    analogWrite(pwm_pin, map(desired_speed, 0, 150, 0, 255)); // open loop control, maps and directly outputs desired speed
+    analogWrite(pwm_pin, map(desired_speed, 0, 150, 0, 255)); // Open loop control, maps and directly outputs desired speed
+  }
+  // Unknown mode, default to setting speed to 0
+  else 
+  {
+    analogWrite(pwm_pin, 0);
   }
 
-  update_lcd();
 
-  send_comms();   // sends speed and pwm value to the control box
+  update_lcd();   // Update LCD
+  send_comms();   // Send current speed and pwm value to control box
 
-  while (millis() - loop_start_time < loop_period)  // fixes loop length
-  {
-  }
+  // Delay until loop has met desired duration in order to maintain correct loop frequency
+  while (millis() - loop_start_time < loop_period) {}
 
-  loop_pulse_count = pulse_count - loop_start_pulse_count;    // for calculating speed in next loop iteration
+  loop_pulse_count = pulse_count - loop_start_pulse_count;    // For calculating speed in next loop iteration
 }
 
+// Set pin input/output modes
 void pin_definitions()
 {
-  pinMode(3, OUTPUT);
-  pinMode(4, OUTPUT);
-  pinMode(5, OUTPUT);
-  pinMode(6, OUTPUT);
-  pinMode(7, OUTPUT);
-  pinMode(8, OUTPUT);
-  pinMode(9, OUTPUT);
-  pinMode(10, OUTPUT);
+  // Outputs
+  pinMode(safety_pin, OUTPUT);
+  pinMode(brakes_pin, OUTPUT);
+  pinMode(H1A, OUTPUT);
+  pinMode(H1B, OUTPUT);
+  pinMode(H2A, OUTPUT);
+  pinMode(H2B, OUTPUT);
+  pinMode(pwm_pin, OUTPUT);
+  pinMode(horn_pin, OUTPUT);
+
+  // Inputs
   pinMode(autostop_pin_interrupt, INPUT);
-  pinMode(13, INPUT);
+  pinMode(encoder_1a_interrupt, INPUT);
+  pinMode(encoder_1b, INPUT);
+  pinMode(encoder_1i, INPUT);
 }
 
-void read_encoder1()  // Interrupt service routine for counting encoder pulses
+// Interrupt service routine for counting encoder pulses
+void read_encoder1()
 {
   pulse_count++;
 }
 
+// Receive data from control box over serial
 void receive_comms()
 {
   static unsigned long time_last_comms_received = 0;
-  static const unsigned long timeout_period = 95;  // sets timeout for loss of communications
+  static const unsigned long timeout_period = 95;  // Serial timeout duration
 
+  // While there is data to be read
   while (Serial.available() > 0)
   {
-    Serial.find(',');   // read until delimiter found. Prevents errors if initial messages do not line up
-    while (Serial.available() < 4)    // wait for full message
+    Serial.find(',');   // Read until delimiter found. Prevents errors if initial messages do not line up
+    while (Serial.available() < 4)    // Wait for full message
     {
     }
-    desired_speed = byte(Serial.read());    // desired speed is sent as a single 8-bit character - converted into a byte for use in the code
+    // Read varials from serial
+    desired_speed = byte(Serial.read());    // Desired speed is sent as a single 8-bit character - converted into a byte for use in the code
     horn = Serial.read();
     drive = Serial.read();
     autostop = Serial.read();
+
     time_last_comms_received = millis();
   }
-  if (millis() - time_last_comms_received > timeout_period)  // shutdown loco if communication is lost
+  if (millis() - time_last_comms_received > timeout_period)  // Shutdown loco if serial timeout exceeded
   {
     drive = 'S';
     horn = 'h';
@@ -149,22 +173,26 @@ void change_outputs()
   static const unsigned long bridge_dead_time = 200;
   static boolean bridge_switch_flag = 0;
 
+  // Check if horn input has changed
   if (horn != prev_horn)
   {
     switch (horn)
     {
+      // Horn off
       case 'h':
         lcd.setCursor(0, 0);
         lcd.write("h");
         digitalWrite(horn_pin, LOW);
         break;
 
+      // Horn on
       case 'H':
         lcd.setCursor(0, 0);
         lcd.write("H");
         digitalWrite(horn_pin, HIGH);
         break;
 
+      // Unknown value
       default:
         lcd.setCursor(0, 0);
         lcd.write("E");
@@ -172,10 +200,12 @@ void change_outputs()
     }
   }
 
+  // Check if drive input has changed
   if (drive != prev_drive)
   {
     switch (drive)
     {
+      // Stop
       case 'S':
         lcd.setCursor(0, 1);
         lcd.write("Stopped");
@@ -186,6 +216,7 @@ void change_outputs()
         digitalWrite(H2B, LOW);
         break;
 
+      // Neutral
       case 'N':
         lcd.setCursor(0, 1);
         lcd.write("Neutral");
@@ -196,6 +227,7 @@ void change_outputs()
         digitalWrite(H2B, LOW);
         break;
 
+      // Forwards
       case 'F':
         lcd.setCursor(0, 1);
         lcd.write("Forward");
@@ -208,6 +240,7 @@ void change_outputs()
         bridge_switch_flag = 1;
         break;
 
+      // Reverse
       case 'R':
         lcd.setCursor(0, 1);
         lcd.write("Reverse");
@@ -220,6 +253,7 @@ void change_outputs()
         bridge_switch_flag = 1;
         break;
 
+      // Unknown value
       default:
         lcd.setCursor(0, 1);
         lcd.write("Error  ");
@@ -228,18 +262,22 @@ void change_outputs()
     }
   }
 
+  // Check if motor direction needs changing
   if (bridge_switch_flag == 1)
   {
+    // Check if enough time has elapsed before setting new direction
     if (millis() - bridge_low_time > bridge_dead_time)
     {
       bridge_switch_flag = 0;
       switch (drive)
       {
+        // Set H-Bridge forwards
         case 'F':
           digitalWrite(H1A, HIGH);
           digitalWrite(H2B, HIGH);
           break;
 
+        // Set H-Bridge reverse
         case 'R':
           digitalWrite(H1B, HIGH);
           digitalWrite(H2A, HIGH);
@@ -248,15 +286,18 @@ void change_outputs()
     }
   }
 
+  // Check if autostop input has changed
   if (autostop != prev_autostop)
   {
     switch (autostop)
     {
+      // No autostop
       case 'a':
         lcd.setCursor(1, 0);
         lcd.write("a");
         break;
 
+      // Setup autostop
       case 'A':
         lcd.setCursor(1, 0);
         lcd.write("A");
@@ -265,24 +306,29 @@ void change_outputs()
         attachInterrupt(digitalPinToInterrupt(autostop_pin_interrupt), autostop_ISR, LOW);
         break;
 
+      // Unknown value
       default:
         lcd.setCursor(1, 0);
         lcd.write("E");
         break;
     }
   }
+
   prev_drive = drive;
   prev_horn = horn;
   prev_autostop = autostop;
 }
 
-void autostop_ISR()   // Yay Lawrence did his thing. The train may have a seizure.
+// Called when autostop mode enabled and autostop pin triggered
+void autostop_ISR()
 {
-  auto_start_pulse_count = pulse_count;
-  autostop_flag = 1;
+  auto_start_pulse_count = pulse_count; // Store current encoder value so control code can calculate distance travelled
+  autostop_flag = 1;  // Set flag to tell control code to start decelerate
   detachInterrupt(digitalPinToInterrupt(autostop_pin_interrupt));   // Prevents autostop triggering again (output generally flickers)
 }
 
+// Determine pwm output when in autostop mode
+// Target speed is proportional to distance from 25m
 byte auto_reference()   // 81487 pulses = 25m travelled 
 {
   static const unsigned long stopping_counter = 79400;
@@ -290,13 +336,16 @@ byte auto_reference()   // 81487 pulses = 25m travelled
 
   static const unsigned long stopping_divisor = stopping_counter / 100;
   static unsigned long auto_pulse_count = 0;
-  static byte auto_speed_setpoint = 100;    // loco should be going at above 10kmph before autostop entered
+  static byte auto_speed_setpoint = 100;    // Loco should be going at above 10kmph before autostop entered
 
-  auto_pulse_count = pulse_count - auto_start_pulse_count;
+  auto_pulse_count = pulse_count - auto_start_pulse_count;  // Calculate distance traveled
+
+  // If haven't reached 25m yet
   if (auto_pulse_count < stopping_counter)
   {
     auto_speed_setpoint = 101 - auto_pulse_count / stopping_divisor;
   }
+  // If reached 25m
   else if (auto_pulse_count > mech_engage_count)
   {
     auto_speed_setpoint = 0;
@@ -308,6 +357,7 @@ byte auto_reference()   // 81487 pulses = 25m travelled
 //    digitalWrite(H2A, LOW);
 //    digitalWrite(H2B, LOW);
   }
+  
   return auto_speed_setpoint;
 }
 
@@ -328,14 +378,14 @@ void set_pwm(int requested)
   static const float kp = 6;    // higher gain: faster response, lower steady state offset (if ki = 0), more likely to wheelslip
   static const float ki = 0.02 * pwm_update_period / 100;   // increase gain to remove offset faster, but may induce oscillations. Should be several orders of magnitude lower than kp.
 
-  if (millis() - last_pwm_update > pwm_update_period)   // fixes pwm update period
+  if (millis() - last_pwm_update > pwm_update_period)   // Fixes pwm update period
   {
-    if (drive == 'F' || drive == 'R')   // only outputs value if in forwards or reverse drive mode
+    if (drive == 'F' || drive == 'R')   // Only outputs value if in forwards or reverse drive mode
     {
       error = requested - actual_speed;
       new_integral_error = integral_error + error;
 
-      control_output = kp * error + ki * new_integral_error;    // calculation of control output
+      control_output = kp * error + ki * new_integral_error;    // Calculation of control output
 
       // Anti Windup Measures
       windup_flag = 1;
@@ -359,32 +409,33 @@ void set_pwm(int requested)
       {
         pwm = control_output;
       }
-      if (windup_flag == 1)   // only changes integrator when not wound up
+      if (windup_flag == 1)   // Only changes integrator when not wound up
       {
         integral_error = new_integral_error;
       }
     }
-    else if (drive == 'S' || drive == 'N')    // if drive is stopped or neutral, make output 0
+    else if (drive == 'S' || drive == 'N')    // If drive is stopped or neutral, make output 0
     {
-      integral_error = 0;   // resets integral error to prevent it being non-zero when switched back into forwards or reverse
+      integral_error = 0;   // Resets integral error to prevent it being non-zero when switched back into forwards or reverse
       pwm = 0;
     }
     if (autostop_end == 1)
     {
       pwm = 0;
     }
-    analogWrite(pwm_pin, pwm);    // outputs calculated pwm value
+    analogWrite(pwm_pin, pwm);    // Outputs calculated pwm value
   }
 }
 
-void update_lcd()   // prints out some information
+// Update LCD contents
+void update_lcd()
 {
   static unsigned long lcd_update_time = 0;
   static const unsigned long lcd_update_period = 1000;
   static float actual_speed_kmph = 0;
   static float desired_speed_kmph = 0;
 
-  if (millis() - lcd_update_time > lcd_update_period)   // lcd update speed information
+  if (millis() - lcd_update_time > lcd_update_period)   // Update at a fixed interval
   {
     desired_speed_kmph = desired_speed / 10.0;
     lcd.setCursor(3, 0);
@@ -399,12 +450,13 @@ void update_lcd()   // prints out some information
   }
 }
 
+// Send data back to control box
 void send_comms()
 {
   static unsigned long time_last_comms_sent = 0;
-  static const unsigned long send_period = 500;     // sets data send interval
+  static const unsigned long send_period = 500;
 
-  if (millis() - time_last_comms_sent > send_period)  // sends communications at fixed period
+  if (millis() - time_last_comms_sent > send_period)  // Sends communications at fixed interval
   {
     Serial.print(',');
     Serial.print(char(actual_speed));
